@@ -14,3 +14,9 @@ outputs/test_figures/
 
 # Editor settings
 .vscode/
+
+# Dataset
+data/
+
+# macOS files
+.DS_Store

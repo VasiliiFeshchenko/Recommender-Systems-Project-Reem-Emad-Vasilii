@@ -36,18 +36,20 @@ def rating_distribution(ratings):
 
 # Calculate monthly rating activity from Unix timestamps
 
-def monthly_rating_activity(ratings):
 
-    dates = pd.to_datetime(ratings["Timestamp"], unit="s", utc=True)
+def monthly_rating_activity(ratings):
+    dates = pd.to_datetime(
+        ratings["Timestamp"], unit="s", utc=True
+    )
 
     monthly_activity = (
         ratings.assign(Date=dates)
-        .set_index("Date")
-        .resample("MS")
+        .groupby(dates.dt.to_period("M"))
         .size()
     )
 
     return monthly_activity
+
 
 # Generate and save the movie long-tail distribution plot
 
@@ -121,7 +123,10 @@ def plot_monthly_activity(monthly_activity, figures_dir):
 
     fig, ax = plt.subplots(figsize=(12, 5))
 
-    ax.plot(monthly_activity.index, monthly_activity.values)
+    ax.plot(
+    monthly_activity.index.to_timestamp(),
+    monthly_activity.values
+)
 
     ax.set_title("Monthly Rating Activity")
     ax.set_xlabel("Month")

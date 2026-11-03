@@ -55,3 +55,25 @@ The script performs data quality checks, calculates EDA statistics, and saves fo
 The EDA notebook is available in 01_Data_Exploration.ipynb.
 
 The remaining recommendation models and evaluation components will be integrated as the project progresses.
+
+## Temporal Data Split
+
+The project uses a chronological split of the MovieLens 1M ratings based on their timestamps. Before splitting, the ratings are sorted from earliest to latest to preserve temporal order.
+
+The dataset is divided into three subsets:
+
+Training set (70%): 700,146 ratings.
+
+Validation set (10%): 100,021 ratings.
+
+Test set (20%): 200,042 ratings.
+
+The split is implemented in run_all.py. The script reports the number of ratings and date range for each subset and checks that the ratings are ordered chronologically.
+
+This split provides separate datasets for model training, validation, and final testing while respecting the temporal order of the ratings.
+
+# EDA Updates
+
+The exploratory data analysis (EDA) pipeline includes monthly rating activity analysis and visualization.
+The monthly activity calculation and plotting were updated to group ratings by month and convert monthly periods to timestamps for plotting. The script saves the generated EDA figures in outputs/figures/.
+
