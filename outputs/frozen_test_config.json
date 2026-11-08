@@ -1,0 +1,58 @@
+{
+  "selection_metric": "validation NDCG@10",
+  "knn": {
+    "similarity": "Pearson",
+    "k": 1
+  },
+  "preferred_popularity": "All training history; count ratings>=4",
+  "popularity_variants": [
+    {
+      "name": "All training history; count ratings>=3",
+      "window_days": null,
+      "min_rating": 3
+    },
+    {
+      "name": "All training history; count ratings>=4",
+      "window_days": null,
+      "min_rating": 4
+    },
+    {
+      "name": "All training history; count ratings>=5",
+      "window_days": null,
+      "min_rating": 5
+    },
+    {
+      "name": "Last 90 days; count ratings>=3",
+      "window_days": 90,
+      "min_rating": 3
+    },
+    {
+      "name": "Last 90 days; count ratings>=4",
+      "window_days": 90,
+      "min_rating": 4
+    },
+    {
+      "name": "Last 90 days; count ratings>=5",
+      "window_days": 90,
+      "min_rating": 5
+    },
+    {
+      "name": "Last 30 days; count ratings>=3",
+      "window_days": 30,
+      "min_rating": 3
+    },
+    {
+      "name": "Last 30 days; count ratings>=4",
+      "window_days": 30,
+      "min_rating": 4
+    },
+    {
+      "name": "Last 30 days; count ratings>=5",
+      "window_days": 30,
+      "min_rating": 5
+    }
+  ],
+  "cutoff": 10,
+  "relevance_threshold": 4,
+  "minimum_history": 5
+}

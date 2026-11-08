@@ -29,9 +29,14 @@ The original dataset is not included in this repository.
 
 - Python 3.10.19
 - pandas 2.3.3
-- NumPy 2.2.6
+- NumPy 1.26.4
 - Matplotlib 3.10.8
 - Seaborn 0.13.2
+- scipy 1.15.3
+- scikit-learn 1.7.2
+- contourpy 1.3.2
+
+The full dependency list is pinned in requirements.txt.
 
 ## Setup
 
@@ -41,7 +46,7 @@ Install the required dependencies:
 python -m pip install -r requirements.txt
 ```
 
-## Running the EDA
+## Running the EDA and validation
 
 From the project root directory, run:
 
@@ -54,7 +59,23 @@ The script performs data quality checks, calculates EDA statistics, and saves fo
 
 The EDA notebook is available in 01_Data_Exploration.ipynb.
 
-The remaining recommendation models and evaluation components will be integrated as the project progresses.
+The same command also validates item-based kNN (Cosine, Pearson, and Jaccard similarities with different k values) and nine popularity variants (30 days, 90 days, or all history; counted ratings ≥3, ≥4, or ≥5). Hyperparameters are selected using validation NDCG@10.
+
+## Final evaluation and saved results
+
+After validation, refit on training + validation data and evaluate on the test set:
+
+```bash
+python run_all.py --data-dir data/ml-1m --evaluate-test
+```
+
+Final evaluation saves the selected settings in outputs/frozen_test_config.json and reuses this file if it already exists. Metrics are Precision@10, Recall@10, NDCG@10, and catalogue coverage; ratings ≥4 are considered relevant.
+
+Saved results can be inspected without rerunning the time-consuming experiments:
+
+- results.csv: final test metrics.
+- outputs/knn_validation_results.csv: kNN validation comparison.
+- outputs/popularity_validation_results.csv: popularity validation comparison.
 
 ## Temporal Data Split
 
