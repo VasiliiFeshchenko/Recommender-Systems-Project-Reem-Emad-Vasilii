@@ -16,16 +16,16 @@ SIMILARITY_METHODS = {
 }
 
 
-def freeze_configuration(results_dir):
+def freeze_configuration(results_dir, refresh_config=False):
     path = results_dir / "frozen_test_config.json"
-    if path.exists():
+    if path.exists() and not refresh_config:
         print(f"Reusing frozen choices from {path}", flush=True)
         return json.loads(path.read_text(encoding="utf-8"))
 
     knn_path = results_dir / "knn_validation_results.csv"
     popularity_path = results_dir / "popularity_validation_results.csv"
     if not knn_path.exists() or not popularity_path.exists():
-        raise ValueError("Complete the validation run first: python run_all.py --data-dir data/ml-1m")
+        raise ValueError("Complete the validation run first: python run_all.py --data-dir data/ml-1m --validation-only")
     knn_results = pd.read_csv(knn_path)
     popularity_results = pd.read_csv(popularity_path)
 
@@ -71,8 +71,8 @@ def freeze_configuration(results_dir):
     return config
 
 
-def run_final_evaluation(train, validation, test, movies, results_dir):
-    config = freeze_configuration(results_dir)
+def run_final_evaluation(train, validation, test, movies, results_dir, refresh_config=False):
+    config = freeze_configuration(results_dir, refresh_config=refresh_config)
     history = pd.concat([train, validation], ignore_index=True)
     history_counts = history.groupby("UserID")["MovieID"].nunique()
     eligible = history_counts[history_counts >= config["minimum_history"]].index

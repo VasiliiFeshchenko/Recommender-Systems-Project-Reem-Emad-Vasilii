@@ -46,9 +46,9 @@ Install the required dependencies:
 python -m pip install -r requirements.txt
 ```
 
-## Running the EDA and validation
+## Run the complete project
 
-From the project root directory, run:
+From the project root directory, run the full pipeline with one command:
 
 ```bash
 python run_all.py --data-dir data/ml-1m
@@ -57,19 +57,31 @@ If the dataset is stored elsewhere, replace data/ml-1m with the actual dataset f
 
 The script performs data quality checks, calculates EDA statistics, and saves four visualizations in outputs/figures/.
 
+Then the system validates item-based kNN (Cosine, Pearson, and Jaccard similarities with different k values) and nine popularity variants (30 days, 90 days, or all history; counted ratings ≥3, ≥4, or ≥5). Hyperparameters are selected using validation NDCG@10. It then freezes the (hyperparameter) choices from this validation run, refits on training + validation data, and evaluates the selected kNN configuration and all nine popularity variants on test, saving results.csv.
+
 The EDA notebook is available in 01_Data_Exploration.ipynb.
 
-The same command also validates item-based kNN (Cosine, Pearson, and Jaccard similarities with different k values) and nine popularity variants (30 days, 90 days, or all history; counted ratings ≥3, ≥4, or ≥5). Hyperparameters are selected using validation NDCG@10.
+## Optional: run individual stages
 
-## Final evaluation and saved results
-
-After validation, refit on training + validation data and evaluate on the test set:
+Run only EDA and training/validation, leaving the test set unevaluated:
 
 ```bash
-python run_all.py --data-dir data/ml-1m --evaluate-test
+python run_all.py --data-dir data/ml-1m --validation-only
 ```
 
-Final evaluation saves the selected settings in outputs/frozen_test_config.json and reuses this file if it already exists. Metrics are Precision@10, Recall@10, NDCG@10, and catalogue coverage; ratings ≥4 are considered relevant.
+After validation, run only the final refit and test evaluation using saved choices/results:
+
+```bash
+python run_all.py --data-dir data/ml-1m --test-only
+```
+
+These optional stage flags are mutually exclusive.
+
+To test the operation of our code wee recommend running --test-only on outputs/frozen_test_config.json data that is already computed by us and uploaded on github. The reason for this is simple -- the validation stage can take 10-20 minutes to run. 
+
+## Saved results
+
+The complete run saves fresh validation-selected settings in outputs/frozen_test_config.json before test evaluation, replacing any previous frozen settings. The test-only command reuses this file if it exists; otherwise, it selects and freezes settings from the saved validation results. Metrics are Precision@10, Recall@10, NDCG@10, and catalogue coverage; ratings ≥4 are considered relevant.
 
 Saved results can be inspected without rerunning the time-consuming experiments:
 
