@@ -8,6 +8,8 @@ from src import eda
 from src import item_based_kNN
 from src import most_popular
 from src.evaluation import evaluate_ranking
+# Import our Content-Based recommendation model
+from src import content_based
 
 import pandas as pd
 import numpy as np
@@ -254,6 +256,109 @@ best_popularity = popularity_comparison.sort_values(
 ).iloc[0]
 print(f"\nBest popularity variant by validation NDCG@10: {best_popularity['Variant / settings']}")
 print("Results saved to outputs/popularity_validation_results.csv. Test set remains untouched.")
+
+# ------------------------------------------------
+# Content-Based Recommender: Validation
+# ------------------------------------------------
+
+# Store the results of all eight configurations
+content_results = []
+
+# Try each rating-weighting method
+for weight_mode in content_based.WEIGHT_MODES:
+
+    # Try each release-year weight
+    for year_weight in content_based.YEAR_WEIGHTS:
+
+        # Show the configuration being evaluated
+        print(
+            f"\nContent-Based: {weight_mode}, year_weight={year_weight}",
+            flush=True
+        )
+
+        # Build movie features using the selected year weight
+        item_features = content_based.build_item_features(
+            movies, year_weight=year_weight
+        )
+
+        # Build user profiles using training ratings only
+        user_profiles = content_based.build_user_profiles(
+            train, item_features, weight_mode=weight_mode
+        )
+
+        # Collect the top-ten predictions from each user batch
+        top10_batches = []
+
+        # Process 50 users at a time to limit memory usage
+        for start in range(0, len(target_users), 50):
+
+            # Select the current batch of users
+            batch_users = target_users[start:start + 50]
+
+            # Score all unseen movies for these users
+            batch_predictions = content_based.generate_prediction_scores(
+                batch_users, train, item_features, user_profiles
+            )
+
+            # Sort predictions from highest to lowest similarity
+            batch_predictions = batch_predictions.sort_values(
+                ["UserID", "Prediction", "MovieID"],
+                ascending=[True, False, True]
+            )
+
+            # Keep the ten highest-scoring movies for each user
+            batch_top10 = batch_predictions.groupby("UserID").head(10)
+
+            # Save this batch's top-ten predictions
+            top10_batches.append(batch_top10)
+
+        # Combine the predictions from all user batches
+        predictions = pd.concat(top10_batches, ignore_index=True)
+
+        # Evaluate using the team's existing evaluation function
+        metrics = evaluate_ranking(
+            predictions,
+            validation,
+            train,
+            target_users,
+            movies["MovieID"],
+            cutoff=10,
+            relevance_threshold=4
+        )
+
+        # Record the configuration and its evaluation metrics
+        content_results.append({
+            "Model": "Content-Based",
+            "Weight mode": weight_mode,
+            "Year weight": year_weight,
+            **metrics
+        })
+
+        # Save the results after each completed configuration
+        pd.DataFrame(content_results).to_csv(
+            results_dir / "content_based_validation_results.csv",
+            index=False
+        )
+
+        # Display the current configuration's performance
+        print(metrics, flush=True)
+
+# Convert all configuration results into a DataFrame
+content_results_df = pd.DataFrame(content_results)
+
+# Select the configuration with the highest validation NDCG
+best_content = content_results_df.sort_values(
+    ["NDCG@10", "Weight mode", "Year weight"],
+    ascending=[False, True, True]
+).iloc[0]
+
+# Display the complete validation comparison
+print("\nCONTENT-BASED VALIDATION RESULTS")
+print(content_results_df.to_string(index=False))
+
+# Display the best configuration
+print("\nBEST CONTENT-BASED CONFIGURATION")
+print(best_content.to_string())
 
 if not args.validation_only:
     from src.final_evaluation import run_final_evaluation

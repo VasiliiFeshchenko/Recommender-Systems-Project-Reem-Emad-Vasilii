@@ -6,6 +6,10 @@ import numpy as np
 import pandas as pd
 
 from src import item_based_kNN, most_popular
+
+# Import the Content-Based model and its hyperparameter grid
+from src import content_based
+
 from src.evaluation import evaluate_ranking
 
 
@@ -55,9 +59,51 @@ def freeze_configuration(results_dir, refresh_config=False):
         [variant["name"] for variant in variants]
     ]
     best_popularity = popularity_results["NDCG@10"].idxmax()
+    # Locate the saved Content-Based validation results
+    content_path = results_dir / "content_based_validation_results.csv"
+
+    # Ensure the validation results exist
+    if not content_path.exists():
+        raise FileNotFoundError("Content-Based validation results are missing.")
+
+    # Load the eight evaluated configurations
+    content_results = pd.read_csv(content_path)
+
+    # Define the eight configurations we expected to evaluate
+    expected_content = {
+        (mode, float(year))
+        for mode in content_based.WEIGHT_MODES
+        for year in content_based.YEAR_WEIGHTS
+    }
+
+    # Collect the configurations actually present in the CSV
+    actual_content = set(
+        zip(content_results["Weight mode"], content_results["Year weight"])
+    )
+
+    # Ensure all eight configurations were evaluated exactly once
+    if (
+        len(content_results) != len(expected_content)
+        or actual_content != expected_content
+        or not np.isfinite(content_results["NDCG@10"].to_numpy()).all()
+    ):
+        raise ValueError("Content-Based validation results are incomplete or invalid.")
+
+    # Select the best configuration using validation NDCG
+    best_content = content_results.sort_values(
+        ["NDCG@10", "Weight mode", "Year weight"],
+        ascending=[False, True, True]
+    ).iloc[0]
+
     config = {
         "selection_metric": "validation NDCG@10",
         "knn": {"similarity": best_knn["Similarity"], "k": int(best_knn["k"])},
+         # Save the selected Content-Based configuration
+        "content_based": {
+            "weight_mode": str(best_content["Weight mode"]),
+            "year_weight": float(best_content["Year weight"]),
+        },
+
         "preferred_popularity": best_popularity,
         "popularity_variants": variants,
         "cutoff": 10,
@@ -136,6 +182,77 @@ def run_final_evaluation(train, validation, test, movies, results_dir, refresh_c
                      + "; recent windows include timestamps>=end-days*86400; zero count for unobserved items",
         })
         del predictions
+
+        # Get the Content-Based settings selected during validation
+    content_settings = config["content_based"]
+
+    # Build movie features using the selected year weight
+    content_features = content_based.build_item_features(
+        movies, year_weight=content_settings["year_weight"]
+    )
+
+    # Rebuild user profiles using Train + Validation
+    content_profiles = content_based.build_user_profiles(
+        history,
+        content_features,
+        weight_mode=content_settings["weight_mode"]
+    )
+
+    # Store the top-ten recommendations from each batch
+    content_batches = []
+
+    # Process target users in batches of 50
+    for start in range(0, len(target_users), 50):
+
+        # Select the current group of users
+        batch_users = target_users[start:start + 50]
+
+        # Calculate scores for their unseen movies
+        batch_predictions = content_based.generate_prediction_scores(
+            batch_users, history, content_features, content_profiles
+        )
+
+        # Rank movies by similarity, breaking ties by MovieID
+        batch_predictions = batch_predictions.sort_values(
+            ["UserID", "Prediction", "MovieID"],
+            ascending=[True, False, True]
+        )
+
+        # Keep the best ten movies for each user
+        content_batches.append(
+            batch_predictions.groupby("UserID").head(config["cutoff"])
+        )
+
+    # Combine predictions for all target users
+    content_predictions = pd.concat(content_batches, ignore_index=True)
+
+    # Evaluate Content-Based using the same team evaluation function
+    content_metrics = evaluate_ranking(
+        content_predictions,
+        test,
+        history,
+        target_users,
+        movies["MovieID"],
+        cutoff=config["cutoff"],
+        relevance_threshold=config["relevance_threshold"]
+    )
+
+    # Add Content-Based results to the shared final results table
+    rows.append({
+        "Model": "Content-Based",
+        "Variant / settings": (
+            f"weight_mode={content_settings['weight_mode']}; "
+            f"year_weight={content_settings['year_weight']}"
+        ),
+        "Similarity": "Cosine",
+        "k": "",
+        **content_metrics,
+        "Seed": 0,
+        "Notes": common_notes + "; self-implemented genre/year profile matching",
+    })
+
+    # Display Content-Based final metrics
+    print("Content-Based final test metrics:", content_metrics, flush=True)
 
     results = pd.DataFrame(rows)
     # Write only after all final evaluations finish; preserve validation CSVs.
