@@ -4,6 +4,13 @@
     "similarity": "Pearson",
     "k": 1
   },
+  "mf": {
+    "n_factors": 50,
+    "n_epochs": 20,
+    "lr_all": 0.005,
+    "reg_all": 0.01,
+    "random_state": 1
+  },
   "preferred_popularity": "All training history; count ratings>=4",
   "popularity_variants": [
     {

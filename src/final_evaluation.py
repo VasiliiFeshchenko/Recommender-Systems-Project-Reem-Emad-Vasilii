@@ -5,7 +5,7 @@ import json
 import numpy as np
 import pandas as pd
 
-from src import item_based_kNN, most_popular
+from src import item_based_kNN, most_popular, services
 from src.evaluation import evaluate_ranking
 
 
@@ -16,11 +16,37 @@ SIMILARITY_METHODS = {
 }
 
 
+def select_mf_configuration(results_dir):
+    path = results_dir / "MF_SVD_validation_results.csv"
+    if not path.exists():
+        raise ValueError("MF validation results are missing. Run python run_all.py --validation-only first.")
+
+    results = pd.read_csv(path)
+    columns = ["k", "n", "lr", "reg", "Seed", "NDCG@10"]
+    if (results.empty or not set(columns).issubset(results.columns)
+            or not np.isfinite(results[columns].to_numpy(dtype=float)).all()):
+        raise ValueError(f"{path} must contain valid numeric SVD settings and validation NDCG@10.")
+
+    best = results.sort_values("NDCG@10", ascending=False, kind="stable").iloc[0]
+    return {
+        "n_factors": int(best["k"]),
+        "n_epochs": int(best["n"]),
+        "lr_all": float(best["lr"]),
+        "reg_all": float(best["reg"]),
+        "random_state": int(best["Seed"]),
+    }
+
+
 def freeze_configuration(results_dir, refresh_config=False):
     path = results_dir / "frozen_test_config.json"
     if path.exists() and not refresh_config:
+        config = json.loads(path.read_text(encoding="utf-8"))
+        if "mf" not in config:
+            config["mf"] = select_mf_configuration(results_dir)
+            path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+            print(f"Added the MF validation choice to {path}", flush=True)
         print(f"Reusing frozen choices from {path}", flush=True)
-        return json.loads(path.read_text(encoding="utf-8"))
+        return config
 
     knn_path = results_dir / "knn_validation_results.csv"
     popularity_path = results_dir / "popularity_validation_results.csv"
@@ -58,6 +84,7 @@ def freeze_configuration(results_dir, refresh_config=False):
     config = {
         "selection_metric": "validation NDCG@10",
         "knn": {"similarity": best_knn["Similarity"], "k": int(best_knn["k"])},
+        "mf": select_mf_configuration(results_dir),
         "preferred_popularity": best_popularity,
         "popularity_variants": variants,
         "cutoff": 10,
@@ -72,6 +99,10 @@ def freeze_configuration(results_dir, refresh_config=False):
 
 
 def run_final_evaluation(train, validation, test, movies, results_dir, refresh_config=False):
+    from surprise import Dataset, Reader
+
+    from src import matrix_factorization
+
     config = freeze_configuration(results_dir, refresh_config=refresh_config)
     history = pd.concat([train, validation], ignore_index=True)
     history_counts = history.groupby("UserID")["MovieID"].nunique()
@@ -85,12 +116,12 @@ def run_final_evaluation(train, validation, test, movies, results_dir, refresh_c
         f"evaluation relevance rating>={config['relevance_threshold']}; "
         f"history>={config['minimum_history']}; full catalogue; exclude all history-rated movies; "
         "macro accuracy; users without relevant unseen test movies excluded from accuracy "
-        "and coverage; ties by MovieID ascending; deterministic algorithm (seed unused)"
+        "and coverage; ties by MovieID ascending"
     )
     rows = []
     similarity_name = config["knn"]["similarity"]
     k = config["knn"]["k"]
-    matrix = item_based_kNN.build_movie_user_matrix(history)
+    matrix = services.build_movie_user_matrix(history)
     print(f"Computing {similarity_name} similarities from train+validation...", flush=True)
     similarities = SIMILARITY_METHODS[similarity_name](matrix)
     predictions = item_based_kNN.generate_prediction_scores(
@@ -111,10 +142,35 @@ def run_final_evaluation(train, validation, test, movies, results_dir, refresh_c
         "Variant / settings": "Item-mean-centered; positive neighbors; full catalogue",
         "Similarity": similarity_name, "k": k, **metrics, "Seed": 0,
         "Notes": common_notes + "; " + similarity_note
-                 + "; cold items use history global mean; no neighbors use item mean",
+                 + "; cold items use history global mean; no neighbors use item mean; seed unused",
     })
     print("kNN test metrics:", metrics, flush=True)
-    del predictions, similarities, matrix
+    del predictions, similarities
+
+    mf_settings = config["mf"]
+    print(f"Refitting Surprise SVD on train+validation: {mf_settings}", flush=True)
+    data = Dataset.load_from_df(history[["UserID", "MovieID", "Rating"]], Reader(rating_scale=(1, 5)))
+    trainset = data.build_full_trainset()
+    cold_movie_ids = pd.Index(movies["MovieID"]).unique().difference(matrix.index, sort=False)
+    predictions = matrix_factorization.get_predictions(
+        trainset, target_users, matrix.index.to_numpy(),
+        matrix.loc[:, target_users].isna().T.to_numpy(),
+        cold_movie_ids, history["Rating"].mean(), **mf_settings,
+    )
+    metrics = evaluate_ranking(
+        predictions, test, history, target_users, movies["MovieID"],
+        cutoff=config["cutoff"], relevance_threshold=config["relevance_threshold"],
+    )
+    rows.append({
+        "Model": "Matrix factorization (SVD)",
+        "Variant / settings": ", ".join(
+            f"{name}={mf_settings[name]}" for name in ("n_factors", "n_epochs", "lr_all", "reg_all")
+        ),
+        "Similarity": "", "k": "", **metrics, "Seed": mf_settings["random_state"],
+        "Notes": common_notes + "; cold items use history global mean; unclipped SVD scores",
+    })
+    print("MF test metrics:", metrics, flush=True)
+    del data, trainset, predictions, matrix
 
     # Report all nine predeclared variants; never choose a winner from test scores.
     for variant in config["popularity_variants"]:
@@ -133,7 +189,7 @@ def run_final_evaluation(train, validation, test, movies, results_dir, refresh_c
             "Notes": common_notes
                      + f"; preferred by validation={variant['name'] == config['preferred_popularity']}"
                      + f"; window ends at train+validation max timestamp={int(history['Timestamp'].max())}"
-                     + "; recent windows include timestamps>=end-days*86400; zero count for unobserved items",
+                     + "; recent windows include timestamps>=end-days*86400; zero count for unobserved items; seed unused",
         })
         del predictions
 
