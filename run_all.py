@@ -10,6 +10,10 @@ from src import most_popular
 from src.evaluation import evaluate_ranking
 # Import our Content-Based recommendation model
 from src import content_based
+# Import the User-Based kNN model
+from src import user_based_kNN
+# Import Matrix Factorization model
+from src import matrix_factorization
 
 import pandas as pd
 import numpy as np
@@ -360,6 +364,110 @@ print(content_results_df.to_string(index=False))
 print("\nBEST CONTENT-BASED CONFIGURATION")
 print(best_content.to_string())
 
+# ------------------------------------------------
+# User-Based kNN: Validation
+# ------------------------------------------------
+
+# Build the user-movie rating matrix from training data
+user_movie_matrix = user_based_kNN.build_user_movie_matrix(train)
+
+# Define the similarity methods to evaluate
+user_similarity_methods = {
+    "Cosine": user_based_kNN.compute_cosine_similarity,
+    "Pearson": user_based_kNN.compute_pearson_similarity,
+    "Jaccard": user_based_kNN.compute_jaccard_similarity,
+}
+
+# Store the evaluation results
+user_knn_results = []
+
+# Try each similarity method
+for similarity_name, compute_similarity in user_similarity_methods.items():
+
+    # Compute similarities between users
+    print(f"\nComputing User-Based {similarity_name} similarities...", flush=True)
+    user_similarities = compute_similarity(user_movie_matrix)
+
+    # Try every neighborhood size
+    for k in user_based_kNN.knn_param_grid["model__n_neighbors"]:
+
+        # Display the current configuration
+        print(f"Evaluating User-Based {similarity_name}, k={k}", flush=True)
+
+        # Generate recommendations for eligible validation users
+        predictions = user_based_kNN.generate_prediction_scores(
+            target_users,
+            train,
+            user_movie_matrix,
+            user_similarities,
+            k,
+            catalogue_ids=movies["MovieID"],
+            verbose=False
+        )
+
+        # Calculate the four ranking metrics
+        metrics = evaluate_ranking(
+            predictions,
+            validation,
+            train,
+            target_users,
+            movies["MovieID"],
+            cutoff=10,
+            relevance_threshold=4
+        )
+
+        # Record the configuration and its performance
+        user_knn_results.append({
+            "Model": "User-Based kNN",
+            "Similarity": similarity_name,
+            "k": k,
+            **metrics,
+            "Seed": 0
+        })
+
+        # Save results after every completed configuration
+        pd.DataFrame(user_knn_results).to_csv(
+            results_dir / "user_knn_validation_results.csv",
+            index=False
+        )
+
+        # Display the evaluation metrics
+        print(metrics, flush=True)
+
+        # Release prediction memory
+        del predictions
+
+    # Release the current similarity matrix
+    del user_similarities
+
+# Convert results into a DataFrame
+user_knn_results_df = pd.DataFrame(user_knn_results)
+
+# Select the configuration with the highest validation NDCG
+best_user_knn = user_knn_results_df.sort_values(
+    ["NDCG@10", "k", "Similarity"],
+    ascending=[False, True, True]
+).iloc[0]
+
+# Display all validation results
+print("\nUSER-BASED KNN VALIDATION RESULTS")
+print(user_knn_results_df.to_string(index=False))
+
+# Display the selected configuration
+print("\nBEST USER-BASED KNN CONFIGURATION")
+print(best_user_knn.to_string())
+
+# ------------------------------------------------
+# Matrix Factorization: Hyperparameter Validation
+# ------------------------------------------------
+
+# Run all 60 configurations using training and validation data
+best_mf = matrix_factorization.test_hyperparameters(
+    train,
+    validation,
+    movies
+)
+
 if not args.validation_only:
     from src.final_evaluation import run_final_evaluation
 
@@ -367,3 +475,24 @@ if not args.validation_only:
     run_final_evaluation(
         train, validation, test, movies, results_dir, refresh_config=True,
     )
+
+
+# ------------------------------------------------
+# Part 2 analysis scripts (run after the full validation + test workflow)
+# ------------------------------------------------
+if not args.validation_only:
+    import subprocess
+    import sys
+
+    analysis_commands = [
+        [sys.executable, "-m", "src.equal_budget_sensitivity"],
+        [sys.executable, "-m", "src.statistical_analysis", "--data-dir", str(data_dir)],
+        [sys.executable, "-m", "src.disaggregated_analysis", "--data-dir", str(data_dir)],
+        [sys.executable, "-m", "src.sparsity_ablation", "--data-dir", str(data_dir)],
+    ]
+
+    for command in analysis_commands:
+        print(f"\nRunning analysis: {' '.join(command)}", flush=True)
+        subprocess.run(command, check=True)
+
+    print("\nAll Part 2 analyses completed successfully.", flush=True)

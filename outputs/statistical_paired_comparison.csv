@@ -1,0 +1,2 @@
+Comparison,User_count,MF_mean_NDCG@10,Popular_mean_NDCG@10,Mean_difference_MF_minus_Popular,Bootstrap_95pct_CI_low,Bootstrap_95pct_CI_high,Two_sided_paired_sign_flip_p,Permutation_count,Bootstrap_count,Random_seed
+MF (best new model on validation) minus Most Popular (best baseline on validation),1114,0.1413289848334931,0.22643657921795896,-0.0851075943844659,-0.09698596164370539,-0.0734051343111243,4.999750012499375e-05,20000,10000,42

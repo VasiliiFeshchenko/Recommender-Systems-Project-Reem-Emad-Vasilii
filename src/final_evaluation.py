@@ -5,12 +5,13 @@ import json
 import numpy as np
 import pandas as pd
 
-from src import item_based_kNN, most_popular
+from src import item_based_kNN, most_popular, user_based_kNN, matrix_factorization, services
 
 # Import the Content-Based model and its hyperparameter grid
 from src import content_based
 
 from src.evaluation import evaluate_ranking
+from surprise import Dataset, Reader
 
 
 SIMILARITY_METHODS = {
@@ -20,11 +21,82 @@ SIMILARITY_METHODS = {
 }
 
 
+# Compute user-user similarities using the methods available in teammate's module.
+USER_SIMILARITY_METHODS = {
+    "Cosine": user_based_kNN.compute_cosine_similarity,
+    "Pearson": user_based_kNN.compute_pearson_similarity,
+    "Jaccard": user_based_kNN.compute_jaccard_similarity,
+}
+
+
+def select_user_knn_configuration(results_dir):
+    # Read all 30 user-based kNN validation configurations.
+    path = results_dir / "user_knn_validation_results.csv"
+    if not path.exists():
+        raise FileNotFoundError(f"Missing User-Based kNN validation results: {path}")
+    results = pd.read_csv(path)
+
+    # Verify the configurations match the 3 similarities x 10 k values grid.
+    required = {"Similarity", "k", "NDCG@10"}
+    if results.empty or not required.issubset(results.columns):
+        raise ValueError(f"Invalid User-Based kNN validation CSV: {path}")
+    expected = {
+        (name, k)
+        for name in USER_SIMILARITY_METHODS
+        for k in user_based_kNN.knn_param_grid["model__n_neighbors"]
+    }
+    actual = set(zip(results["Similarity"], results["k"]))
+    if (len(results) != len(expected) or actual != expected
+            or not np.isfinite(results["NDCG@10"].to_numpy(dtype=float)).all()):
+        raise ValueError(f"Incomplete User-Based kNN validation results: {path}")
+
+    # Select using validation NDCG@10 only, resolving ties deterministically.
+    best = results.sort_values(
+        ["NDCG@10", "k", "Similarity"], ascending=[False, True, True]
+    ).iloc[0]
+    return {"similarity": str(best["Similarity"]), "k": int(best["k"])}
+
+
+def select_mf_configuration(results_dir):
+    # Read the 60 results saved by the matrix factorization teammate.
+    path = results_dir / "MF_SVD_validation_results.csv"
+    if not path.exists():
+        raise FileNotFoundError(f"Missing MF validation results: {path}")
+    results = pd.read_csv(path)
+
+    # The teammate's CSV uses k/n/lr/reg for SVD hyperparameters.
+    columns = ["k", "n", "lr", "reg", "Seed", "NDCG@10"]
+    if (results.empty or len(results) != 60
+            or not set(columns).issubset(results.columns)
+            or not np.isfinite(results[columns].to_numpy(dtype=float)).all()
+            or results.duplicated(subset=["k", "n", "lr", "reg", "Seed"]).any()):
+        raise ValueError(f"MF validation results must contain 60 valid unique settings: {path}")
+
+    # Choose the best setting from validation, never from test.
+    best = results.sort_values("NDCG@10", ascending=False, kind="stable").iloc[0]
+    return {
+        "n_factors": int(best["k"]),
+        "n_epochs": int(best["n"]),
+        "lr_all": float(best["lr"]),
+        "reg_all": float(best["reg"]),
+        "random_state": int(best["Seed"]),
+    }
+
+
 def freeze_configuration(results_dir, refresh_config=False):
     path = results_dir / "frozen_test_config.json"
     if path.exists() and not refresh_config:
-        print(f"Reusing frozen choices from {path}", flush=True)
-        return json.loads(path.read_text(encoding="utf-8"))
+        # Older frozen files omit the new Part 2 models; rebuild them from validation.
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        required_keys = {
+            "knn", "preferred_popularity", "popularity_variants",
+            "content_based", "user_based_knn", "mf",
+            "cutoff", "relevance_threshold", "minimum_history",
+        }
+        if required_keys.issubset(saved):
+            print(f"Reusing frozen choices from {path}", flush=True)
+            return saved
+        print("Frozen file lacks new models. Rebuilding using saved validation CSVs.", flush=True)
 
     knn_path = results_dir / "knn_validation_results.csv"
     popularity_path = results_dir / "popularity_validation_results.csv"
@@ -104,6 +176,9 @@ def freeze_configuration(results_dir, refresh_config=False):
             "year_weight": float(best_content["Year weight"]),
         },
 
+        # Freeze the two additional Part 2 models from their validation CSVs.
+        "user_based_knn": select_user_knn_configuration(results_dir),
+        "mf": select_mf_configuration(results_dir),
         "preferred_popularity": best_popularity,
         "popularity_variants": variants,
         "cutoff": 10,
@@ -124,14 +199,15 @@ def run_final_evaluation(train, validation, test, movies, results_dir, refresh_c
     eligible = history_counts[history_counts >= config["minimum_history"]].index
     target_users = test.loc[test["UserID"].isin(eligible), "UserID"].unique()
     print(f"Final evaluation: refit on {len(history):,} ratings; {len(target_users)} target users", flush=True)
-    print(f"Frozen kNN: {config['knn']}; preferred popularity: {config['preferred_popularity']}", flush=True)
+    print(f"Frozen item-kNN: {config['knn']}; user-kNN: {config['user_based_knn']}", flush=True)
+    print(f"Frozen MF: {config['mf']}; Content-Based: {config['content_based']}", flush=True)
 
     common_notes = (
         "FINAL TEST; choices frozen from validation; fitted on train+validation; "
         f"evaluation relevance rating>={config['relevance_threshold']}; "
         f"history>={config['minimum_history']}; full catalogue; exclude all history-rated movies; "
         "macro accuracy; users without relevant unseen test movies excluded from accuracy "
-        "and coverage; ties by MovieID ascending; deterministic algorithm (seed unused)"
+        "and coverage; ties by MovieID ascending"
     )
     rows = []
     similarity_name = config["knn"]["similarity"]
@@ -183,7 +259,71 @@ def run_final_evaluation(train, validation, test, movies, results_dir, refresh_c
         })
         del predictions
 
-        # Get the Content-Based settings selected during validation
+    # ------------------------------------------------
+    # User-Based kNN: refit on Train + Validation and score Test users.
+    # ------------------------------------------------
+    user_settings = config["user_based_knn"]
+    user_matrix = user_based_kNN.build_user_movie_matrix(history)
+    user_similarities = USER_SIMILARITY_METHODS[user_settings["similarity"]](user_matrix)
+    user_predictions = user_based_kNN.generate_prediction_scores(
+        target_users, history, user_matrix, user_similarities,
+        user_settings["k"], catalogue_ids=movies["MovieID"], verbose=False,
+    )
+    user_metrics = evaluate_ranking(
+        user_predictions, test, history, target_users, movies["MovieID"],
+        cutoff=config["cutoff"], relevance_threshold=config["relevance_threshold"],
+    )
+    rows.append({
+        "Model": "User-Based kNN",
+        "Variant / settings": "User-mean-centered; positive neighbors; full catalogue",
+        "Similarity": user_settings["similarity"],
+        "k": user_settings["k"], **user_metrics, "Seed": 0,
+        "Notes": common_notes + "; deterministic model, seed unused; "
+                 "cold items use global mean; fallback movie means",
+    })
+    print("User-Based kNN test metrics:", user_metrics, flush=True)
+    del user_predictions, user_similarities, user_matrix
+
+    # ------------------------------------------------
+    # Matrix Factorization (Surprise SVD): refit on Train + Validation.
+    # ------------------------------------------------
+    mf_settings = config["mf"]
+    print(f"Fitting Matrix Factorization using frozen settings: {mf_settings}", flush=True)
+    mf_data = Dataset.load_from_df(
+        history[["UserID", "MovieID", "Rating"]], Reader(rating_scale=(1, 5))
+    )
+    mf_trainset = mf_data.build_full_trainset()
+
+    # Use the same full-catalogue candidate policy as the teammate's validation.
+    movie_user_matrix = services.build_movie_user_matrix(history)
+    movie_ids = movie_user_matrix.index.to_numpy()
+    unrated_mask = movie_user_matrix.loc[:, target_users].isna().T.to_numpy()
+    cold_movie_ids = pd.Index(movies["MovieID"]).unique().difference(
+        movie_user_matrix.index, sort=False
+    )
+    mf_predictions = matrix_factorization.get_predictions(
+        mf_trainset, target_users, movie_ids, unrated_mask,
+        cold_movie_ids, history["Rating"].mean(), **mf_settings,
+    )
+    mf_metrics = evaluate_ranking(
+        mf_predictions, test, history, target_users, movies["MovieID"],
+        cutoff=config["cutoff"], relevance_threshold=config["relevance_threshold"],
+    )
+    rows.append({
+        "Model": "Matrix factorization (SVD)",
+        "Variant / settings": ", ".join(
+            f"{key}={mf_settings[key]}"
+            for key in ("n_factors", "n_epochs", "lr_all", "reg_all")
+        ),
+        "Similarity": "", "k": "", **mf_metrics,
+        "Seed": mf_settings["random_state"],
+        "Notes": common_notes + "; SVD, cold items use history global mean; "
+                 "unclipped factorization scores",
+    })
+    print("Matrix Factorization test metrics:", mf_metrics, flush=True)
+    del mf_predictions, mf_trainset, mf_data, movie_user_matrix
+
+    # Get the Content-Based settings selected during validation
     content_settings = config["content_based"]
 
     # Build movie features using the selected year weight

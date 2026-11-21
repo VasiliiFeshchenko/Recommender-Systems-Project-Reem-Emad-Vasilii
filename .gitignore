@@ -20,3 +20,8 @@ data/
 
 # macOS files
 .DS_Store
+# Local-only files
+local_backups/
+src/check_content_based.py
+
+/check_content_based.py
