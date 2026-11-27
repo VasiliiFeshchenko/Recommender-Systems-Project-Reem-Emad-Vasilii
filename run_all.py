@@ -14,7 +14,7 @@ from src import content_based
 from src import user_based_kNN
 # Import Matrix Factorization model
 from src import matrix_factorization
-
+from src import mmr
 import pandas as pd
 import numpy as np
 
@@ -260,6 +260,153 @@ best_popularity = popularity_comparison.sort_values(
 ).iloc[0]
 print(f"\nBest popularity variant by validation NDCG@10: {best_popularity['Variant / settings']}")
 print("Results saved to outputs/popularity_validation_results.csv. Test set remains untouched.")
+# ------------------------------------------------
+# MMR: Validation
+# ------------------------------------------------
+
+# Select the best Most Popular configuration using validation NDCG@10
+# Step 1: Select the best Most Popular configuration.
+# We use the validation results to choose the popularity
+# settings that achieved the highest NDCG@10.
+# This ensures MMR starts from the strongest Most Popular
+# configuration rather than using an arbitrary one.
+best_popularity = popularity_comparison.sort_values(
+    "NDCG@10",
+    ascending=False,
+    kind="stable"
+).iloc[0]
+
+base_popularity_name = best_popularity["Variant / settings"]
+# Step 2: Retrieve the actual settings for the selected variant.
+# Match the selected configuration name with the predefined
+# popularity windows and rating thresholds.
+#
+# These settings determine:
+# - window_days: how much training history is considered.
+# - min_rating: the minimum rating counted as positive feedback.
+
+base_variant = next(
+    variant for variant in [
+        {
+            "name": f"{window_name}; count ratings>={threshold}",
+            "window_days": window_days,
+            "min_rating": threshold,
+        }
+        for window_name, window_days in most_popular.POPULARITY_WINDOWS
+        for threshold in most_popular.RATING_THRESHOLDS
+    ]
+    if variant["name"] == base_popularity_name
+)
+
+print(
+    f"\nMMR base model: {base_popularity_name}",
+    flush=True
+)
+
+# Step 3: Define the Lambda values to test.
+# Lambda controls the balance between relevance and diversity:
+# - Lambda = 1.0: relevance is prioritised.
+# - Lambda = 0.0: diversity is prioritised after the first item.
+# - Values between 0 and 1: balance relevance and diversity.
+#
+# We test values from 0.0 to 1.0 in increments of 0.1.
+lambda_values = np.arange(0.0, 1.01, 0.1)
+
+mmr_results = []
+
+# Step 4: Evaluate MMR using each Lambda value.
+for lambda_value in lambda_values:
+
+    lambda_value = round(float(lambda_value), 1)
+
+    print(
+        f"\nEvaluating MMR with Lambda={lambda_value}",
+        flush=True
+    )
+
+    # Step 5: Generate recommendations using MMR.
+    # First, Most Popular generates the candidate recommendations.
+    # Then, MMR re-ranks those candidates to balance relevance
+    # and genre diversity according to the current Lambda value.
+    #
+    # The same selected Most Popular configuration is used
+    # throughout the Lambda search to ensure a fair comparison.
+    predictions = mmr.generate_mmr_recommendations(
+        target_users=target_users,
+        train=train,
+        catalogue_ids=movies["MovieID"],
+        movies=movies,
+        k=10,
+        lambda_=lambda_value,
+        window_days=base_variant["window_days"],
+        min_rating=base_variant["min_rating"],
+    )
+
+    # Step 6: Evaluate the generated recommendations.
+    # Compare the recommendations with the validation data.
+    # The evaluator calculates ranking metrics at cutoff 10,
+    # considering ratings of 4 or higher as relevant
+    metrics = evaluate_ranking(
+        predictions,
+        validation,
+        train,
+        target_users,
+        movies["MovieID"],
+        cutoff=10,
+        relevance_threshold=4,
+    )
+
+    # Step 7: Store the results for the current Lambda value.
+    # Each record includes the model name, Lambda value,
+    # selected base popularity configuration, and evaluation metrics.
+    mmr_results.append({
+        "Model": "MMR",
+        "Lambda": lambda_value,
+        "Base popularity variant": base_popularity_name,
+        **metrics,
+    })
+
+    # Step 8: Save the results after every completed iteration.
+    # This protects the results already collected if the process
+    # is interrupted before all Lambda values have been evaluated.
+    pd.DataFrame(mmr_results).to_csv(
+        results_dir / "mmr_validation_results.csv",
+        index=False
+    )
+
+    print(metrics, flush=True)
+
+    del predictions
+
+
+# Step 9: Convert all collected results into a DataFrame.
+# This makes it easier to compare the performance of each
+# tested Lambda value.
+mmr_results_df = pd.DataFrame(mmr_results)
+# Step 10: Select the best MMR configuration.
+# The configuration with the highest NDCG@10 is selected.
+# If multiple configurations have the same NDCG@10,
+# the higher Lambda value is preferred.
+#
+# The validation set is used for this selection.
+# The test set is not used to tune Lambda.
+best_mmr = mmr_results_df.sort_values(
+    ["NDCG@10", "Lambda"],
+    ascending=[False, False],
+    kind="stable"
+).iloc[0]
+# Step 11: Display the complete MMR validation comparison.
+
+print("\nMMR VALIDATION RESULTS")
+print(mmr_results_df.to_string(index=False))
+
+print("\nBEST MMR CONFIGURATION")
+print(best_mmr.to_string())
+
+print(
+    "\nResults saved to outputs/mmr_validation_results.csv. "
+    "Test set remains untouched."
+)
 
 # ------------------------------------------------
 # Content-Based Recommender: Validation

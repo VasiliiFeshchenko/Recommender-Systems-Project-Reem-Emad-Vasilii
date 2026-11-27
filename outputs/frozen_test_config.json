@@ -12,6 +12,10 @@
     "similarity": "Cosine",
     "k": 5
   },
+  "mmr": {
+    "lambda": 0.9,
+    "base_popularity_variant": "All training history; count ratings>=4"
+  },
   "mf": {
     "n_factors": 50,
     "n_epochs": 20,

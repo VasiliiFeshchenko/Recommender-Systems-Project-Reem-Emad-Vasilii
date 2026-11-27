@@ -9,6 +9,9 @@ from src import item_based_kNN, most_popular, user_based_kNN, matrix_factorizati
 
 # Import the Content-Based model and its hyperparameter grid
 from src import content_based
+# Import the Content-Based model and its hyperparameter grid
+from src import content_based
+from src import mmr
 
 from src.evaluation import evaluate_ranking
 from surprise import Dataset, Reader
@@ -82,6 +85,73 @@ def select_mf_configuration(results_dir):
         "random_state": int(best["Seed"]),
     }
 
+def select_mmr_configuration(results_dir):
+    """
+    Select the best MMR configuration using the validation results.
+
+    This function:
+    1. Loads the MMR validation results CSV.
+    2. Checks that all expected Lambda values are present.
+    3. Validates that the results contain the required columns
+       and valid NDCG@10 values.
+    4. Ensures that the same base popularity configuration
+       was used for every Lambda value.
+    5. Selects the Lambda with the highest validation NDCG@10.
+
+    If two configurations have the same NDCG@10, the larger
+    Lambda value is preferred.
+
+    Returns:
+        dict: The selected Lambda value and its corresponding
+              base Most Popular configuration.
+    """
+    path = results_dir / "mmr_validation_results.csv"
+
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Missing MMR validation results: {path}"
+        )
+
+    results = pd.read_csv(path)
+
+    # Expected Lambda values from 0.0 to 1.0
+    expected_lambdas = {
+        round(value, 1) for value in np.arange(0.0, 1.01, 0.1)
+    }
+
+    required = {"Lambda", "NDCG@10", "Base popularity variant"}
+
+    if results.empty or not required.issubset(results.columns):
+        raise ValueError(f"Invalid MMR validation CSV: {path}")
+
+    actual_lambdas = set(
+        results["Lambda"].astype(float).round(1)
+    )
+
+    if (
+        len(results) != len(expected_lambdas)
+        or actual_lambdas != expected_lambdas
+        or not np.isfinite(results["NDCG@10"].to_numpy(dtype=float)).all()
+        or results["Base popularity variant"].nunique() != 1
+    ):
+        raise ValueError(
+            f"Incomplete or invalid MMR validation results: {path}"
+        )
+
+    # Select the best Lambda using validation NDCG@10.
+    # If tied, prefer the larger Lambda (more relevance).
+    best = results.sort_values(
+        ["NDCG@10", "Lambda"],
+        ascending=[False, False],
+        kind="stable"
+    ).iloc[0]
+
+    return {
+        "lambda": float(best["Lambda"]),
+        "base_popularity_variant": str(
+            best["Base popularity variant"]
+        ),
+    }
 
 def freeze_configuration(results_dir, refresh_config=False):
     path = results_dir / "frozen_test_config.json"
@@ -90,7 +160,7 @@ def freeze_configuration(results_dir, refresh_config=False):
         saved = json.loads(path.read_text(encoding="utf-8"))
         required_keys = {
             "knn", "preferred_popularity", "popularity_variants",
-            "content_based", "user_based_knn", "mf",
+            "content_based", "user_based_knn", "mf","mmr",
             "cutoff", "relevance_threshold", "minimum_history",
         }
         if required_keys.issubset(saved):
@@ -178,6 +248,7 @@ def freeze_configuration(results_dir, refresh_config=False):
 
         # Freeze the two additional Part 2 models from their validation CSVs.
         "user_based_knn": select_user_knn_configuration(results_dir),
+        "mmr": select_mmr_configuration(results_dir),
         "mf": select_mf_configuration(results_dir),
         "preferred_popularity": best_popularity,
         "popularity_variants": variants,
@@ -201,6 +272,7 @@ def run_final_evaluation(train, validation, test, movies, results_dir, refresh_c
     print(f"Final evaluation: refit on {len(history):,} ratings; {len(target_users)} target users", flush=True)
     print(f"Frozen item-kNN: {config['knn']}; user-kNN: {config['user_based_knn']}", flush=True)
     print(f"Frozen MF: {config['mf']}; Content-Based: {config['content_based']}", flush=True)
+    print(f"Frozen MMR: {config['mmr']}", flush=True)
 
     common_notes = (
         "FINAL TEST; choices frozen from validation; fitted on train+validation; "
@@ -393,6 +465,72 @@ def run_final_evaluation(train, validation, test, movies, results_dir, refresh_c
 
     # Display Content-Based final metrics
     print("Content-Based final test metrics:", content_metrics, flush=True)
+
+    # ------------------------------------------------
+    # MMR: Final Test Evaluation
+    # ------------------------------------------------
+
+    mmr_settings = config["mmr"]
+
+    # Find the Most Popular variant selected during validation
+    base_variant = next(
+        variant for variant in config["popularity_variants"]
+        if variant["name"] == mmr_settings["base_popularity_variant"]
+    )
+
+    print(
+        f"Evaluating MMR with frozen settings: {mmr_settings}",
+        flush=True
+    )
+
+    # Generate Most Popular candidates and re-rank them using MMR
+    mmr_predictions = mmr.generate_mmr_recommendations(
+        target_users=target_users,
+        train=history,
+        catalogue_ids=movies["MovieID"],
+        movies=movies,
+        k=config["cutoff"],
+        lambda_=mmr_settings["lambda"],
+        window_days=base_variant["window_days"],
+        min_rating=base_variant["min_rating"],
+    )
+
+    # Evaluate MMR using the existing team evaluation function
+    mmr_metrics = evaluate_ranking(
+        mmr_predictions,
+        test,
+        history,
+        target_users,
+        movies["MovieID"],
+        cutoff=config["cutoff"],
+        relevance_threshold=config["relevance_threshold"],
+    )
+
+    # Add MMR to the final results table
+    rows.append({
+        "Model": "MMR",
+        "Variant / settings": (
+            f"Base=Most Popular ({base_variant['name']}); "
+            f"lambda={mmr_settings['lambda']}"
+        ),
+        "Similarity": "Cosine (genres)",
+        "k": config["cutoff"],
+        **mmr_metrics,
+        "Seed": 0,
+        "Notes": (
+            common_notes
+            + "; Most Popular candidate generation; "
+            + "binary 18-genre vectors; cosine similarity; "
+            + "greedy MMR re-ranking; "
+            + f"lambda={mmr_settings['lambda']}; "
+            + "lambda selected using validation NDCG@10"
+        ),
+    })
+
+    print("MMR final test metrics:", mmr_metrics, flush=True)
+
+    del mmr_predictions
+
 
     results = pd.DataFrame(rows)
     # Write only after all final evaluations finish; preserve validation CSVs.
