@@ -191,6 +191,70 @@ The final test evaluation in the project report compares all five recommendation
 
 These results show that Most Popular achieved the highest ranking performance, while User-based kNN achieved the highest catalogue coverage among the evaluated models.
 
+## Part 3: Beyond Accuracy – Track A
+
+For Part 3, we selected **Track A: Diversity and Popularity Bias**, following the project instructions. We used the best-performing Part 2 model, **Most Popular**, as the base recommender and implemented **Maximal Marginal Relevance (MMR)** as the re-ranking intervention.
+
+### MMR Implementation
+
+The implementation is available in `src/mmr.py`.
+
+Each movie is represented by a binary vector based on the 18 MovieLens genres. **Cosine similarity** is used to measure similarity between movie genre vectors.
+
+MMR combines recommendation relevance with dissimilarity from items already selected:
+
+\[
+MMR(i) = \lambda Rel(i) - (1-\lambda)
+\max_{j \in S} Sim(i,j)
+\]
+
+where:
+
+- `Rel(i)` is the normalized relevance score from the Most Popular model.
+- `Sim(i,j)` is the cosine similarity between two movie genre vectors.
+- `S` is the set of movies already selected.
+- `λ` controls the balance between relevance and diversity.
+
+The implementation uses a greedy re-ranking process and excludes movies that users have already rated.
+
+### Validation Parameter Sweep
+
+We evaluated 11 values of `λ`, from `0.0` to `1.0` in increments of `0.1`, using the validation set.
+
+The selected value was **`λ = 0.9`**, which achieved the highest validation NDCG@10 of **0.1749**. This configuration was frozen before the final test evaluation.
+
+Validation results are saved in `outputs/mmr_validation_results.csv`.
+
+
+
+The final evaluation refitted the selected configuration using the combined training and validation data. The MMR model used `λ = 0.9` and the Most Popular configuration based on all training history with ratings ≥4.
+
+| Model | Precision@10 | Recall@10 | NDCG@10 | Catalogue Coverage |
+|:--|--:|--:|--:|--:|
+| MMR (`λ = 0.9`) | 0.21050 | 0.05448 | **0.22811** | 3.37% |
+| Most Popular (all history, ≥4) | 0.20996 | 0.05412 | 0.22644 | 3.32% |
+
+MMR achieved slightly higher Precision@10, Recall@10, NDCG@10, and catalogue coverage than its corresponding Most Popular baseline.
+
+Across the validation sweep, higher values of `λ` generally resulted in higher NDCG@10 and lower catalogue coverage. The final parameter was selected using validation NDCG@10.
+
+**Metrics reported:** Precision@10, Recall@10, NDCG@10, and catalogue coverage. Intra-list diversity (ILD), Gini index, and calibration error were not calculated in the current implementation.
+
+###  Comparison of Recommendation Models
+
+The following table compares the five Part 2 models and the Part 3 MMR extension on the test set.
+
+| Model | Precision@10 | Recall@10 | NDCG@10 | Catalogue Coverage |
+|:--|--:|--:|--:|--:|
+| Item-based kNN | 0.04695 | 0.01214 | 0.04781 | 23.05% |
+| Most Popular | 0.20996 | 0.05412 | 0.22644 | 3.32% |
+| User-based kNN | 0.05377 | 0.01344 | 0.05538 | 39.17% |
+| Matrix Factorization (SVD) | 0.12900 | 0.03494 | 0.14133 | 16.77% |
+| Content-based Filtering | 0.02576 | 0.00685 | 0.02950 | 33.43% |
+| MMR (`λ = 0.9`) | **0.21050** | **0.05448** | **0.22811** | 3.37% |
+
+MMR achieved the highest NDCG@10 among the evaluated models, with a small improvement over its corresponding Most Popular baseline. User-based kNN achieved the highest catalogue coverage.
+
 ## Project Structure
 
 ```text
